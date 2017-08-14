@@ -323,7 +323,9 @@ int main() {
                     // If current speed is below target speed of 49.5 mph then transition from KL state to CL state.
                     if (too_close && target_vel < 49.5 && state.compare("KL") == 0) {
                         state = "CL";
-                        findNewLane(lane, car_s, time_horizon, sensor_fusion, &lane);
+                        if (target_vel >= 30.0) {
+                            findNewLane(lane, car_s, time_horizon, sensor_fusion, &lane);
+                        }
                     }
 
                     // If lane change complete, then return to keep-lane state
