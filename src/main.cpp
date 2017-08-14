@@ -161,7 +161,7 @@ void checkTrafficAhead(int ego_car_lane, double ego_car_s, double time_horizon,
             double vy = sensor_fusion[i][4];
             double check_car_speed = sqrt(pow(vx, 2) + pow(vy, 2));
             check_car_s += time_horizon * check_car_speed;
-            if ((check_car_s > ego_car_s) && ((check_car_s - ego_car_s) < 20)) {
+            if ((check_car_s - ego_car_s) < 20) {
                 *too_close = true;
                 *car_ahead_speed = check_car_speed;
                 break;
@@ -323,9 +323,7 @@ int main() {
                     // If current speed is below target speed of 49.5 mph then transition from KL state to CL state.
                     if (too_close && target_vel < 49.5 && state.compare("KL") == 0) {
                         state = "CL";
-                        if (target_vel >= 30.0) {
-                            findNewLane(lane, car_s, time_horizon, sensor_fusion, &lane);
-                        }
+                        findNewLane(lane, car_s, time_horizon, sensor_fusion, &lane);
                     }
 
                     // If lane change complete, then return to keep-lane state
