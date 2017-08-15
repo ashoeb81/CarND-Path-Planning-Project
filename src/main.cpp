@@ -156,12 +156,12 @@ void checkTrafficAhead(int ego_car_lane, double ego_car_s, double time_horizon,
     for (int i = 0; i < sensor_fusion.size(); ++i) {
         float d = sensor_fusion[i][6];
         double check_car_s = sensor_fusion[i][5];
-        if (d < (2 + ego_car_lane * 4 + 2) && d > (2 + ego_car_lane * 4 - 2) && check_car_s > ego_car_s) {
+        if (d < (2 + ego_car_lane * 4 + 2) && d > (2 + ego_car_lane * 4 - 2)) {
             double vx = sensor_fusion[i][3];
             double vy = sensor_fusion[i][4];
             double check_car_speed = sqrt(pow(vx, 2) + pow(vy, 2));
             check_car_s += time_horizon * check_car_speed;
-            if ((check_car_s - ego_car_s) < 20) {
+            if (check_car_s > ego_car_s && check_car_s - ego_car_s < 20) {
                 *too_close = true;
                 *car_ahead_speed = check_car_speed;
                 break;
@@ -171,12 +171,10 @@ void checkTrafficAhead(int ego_car_lane, double ego_car_s, double time_horizon,
 }
 
 void findNewLane(int ego_car_lane, double ego_car_s, double time_horizon, const vector<vector<double>> &sensor_fusion,
-                int* new_lane) {
-
-    bool safe_to_change_lanes;
+                 int *new_lane) {
     for (int l = 0; l <= 2; ++l) {
         if ((l != ego_car_lane) && abs(l - ego_car_lane) < 2) {
-            safe_to_change_lanes = true;
+            bool safe_to_change_lanes = true;
             for (int i = 0; i < sensor_fusion.size(); ++i) {
                 float d = sensor_fusion[i][6];
                 if (d < (2 + l * 4 + 2) && d > (2 + l * 4 - 2)) {
@@ -196,6 +194,89 @@ void findNewLane(int ego_car_lane, double ego_car_s, double time_horizon, const 
                 break;
             }
         }
+    }
+}
+
+void addPreviousPathPoints(const vector<double> &previous_path_x, const vector<double> &previous_path_y,
+                           vector<double> *next_x_vals, vector<double> *next_y_vals) {
+    for (int i = 0; i < previous_path_x.size(); ++i) {
+        next_x_vals->push_back(previous_path_x[i]);
+        next_y_vals->push_back(previous_path_y[i]);
+    }
+}
+
+void getAnchorPoints(double ego_car_x, double ego_car_y, double ego_car_yaw, double ego_car_s, double ego_car_lane,
+                     const vector<double> &previous_path_x, const vector<double> &previous_path_y,
+                     const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y,
+                     vector<double> *ptsx, vector<double> *ptsy) {
+    int prev_size = previous_path_x.size();
+    if (prev_size < 1) {
+        ptsx->push_back(ego_car_x - cos(ego_car_yaw));
+        ptsy->push_back(ego_car_y - sin(ego_car_yaw));
+        ptsx->push_back(ego_car_x);
+        ptsy->push_back(ego_car_y);
+    } else {
+        ptsx->push_back(previous_path_x[prev_size - 2]);
+        ptsy->push_back(previous_path_y[prev_size - 2]);
+        ptsx->push_back(previous_path_x[prev_size - 1]);
+        ptsy->push_back(previous_path_y[prev_size - 1]);
+    }
+
+    vector<double> next_wp0 = getXY(ego_car_s + 30, (2 + 4 * ego_car_lane), maps_s, maps_x, maps_y);
+    vector<double> next_wp1 = getXY(ego_car_s + 60, (2 + 4 * ego_car_lane), maps_s, maps_x, maps_y);
+    vector<double> next_wp2 = getXY(ego_car_s + 90, (2 + 4 * ego_car_lane), maps_s, maps_x, maps_y);
+
+    ptsx->push_back(next_wp0[0]);
+    ptsx->push_back(next_wp1[0]);
+    ptsx->push_back(next_wp2[0]);
+
+    ptsy->push_back(next_wp0[1]);
+    ptsy->push_back(next_wp1[1]);
+    ptsy->push_back(next_wp2[1]);
+}
+
+vector<double> getCarPose(const vector<double> &prev_path_x, const vector<double> &prev_path_y) {
+    int prev_size = prev_path_x.size();
+    double x = prev_path_x[prev_size - 1];
+    double y = prev_path_y[prev_size - 1];
+    double x_prev = prev_path_x[prev_size - 2];
+    double y_prev = prev_path_y[prev_size - 2];
+    double yaw = atan2(y - y_prev, x - x_prev);
+    return {x, y, yaw};
+}
+
+void transformAnchorPoints(vector<double> *ptsx, vector<double> *ptsy, double ref_x, double ref_y, double ref_yaw) {
+    // Transform spline anchor points to vehicle reference frame
+    for (int i = 0; i < ptsx->size(); ++i) {
+        double shift_x = (*ptsx)[i] - ref_x;
+        double shift_y = (*ptsy)[i] - ref_y;
+        (*ptsx)[i] = shift_x * cos(ref_yaw) + shift_y * sin(ref_yaw);
+        (*ptsy)[i] = -1 * shift_x * sin(ref_yaw) + shift_y * cos(ref_yaw);
+    }
+}
+
+void interpolateSpline(double ego_car_target_vel, double ref_x, double ref_y, double ref_yaw, const tk::spline &s,
+                       const vector<double> &previous_path_x, vector<double> *next_x_vals,
+                       vector<double> *next_y_vals) {
+    double target_x = 30.0;
+    double target_y = s(target_x);
+    double target_dist = sqrt(pow(target_x, 2) + pow(target_y, 2));
+    double x_add_on = 0.0;
+    double N = (target_dist / (0.02 * ego_car_target_vel * 0.447));
+    double world_x_point, world_y_point;
+    for (int i = 1; i <= 50 - previous_path_x.size(); i++) {
+        double x_point = x_add_on + (target_x / N);
+        double y_point = s(x_point);
+        x_add_on = x_point;
+
+        // Transform spline point back to world coordinate frame.
+
+        world_x_point = x_point * cos(ref_yaw) - y_point * sin(ref_yaw) + ref_x;
+        world_y_point = x_point * sin(ref_yaw) + y_point * cos(ref_yaw) + ref_y;
+
+        // Add spline point to path.
+        next_x_vals->push_back(world_x_point);
+        next_y_vals->push_back(world_y_point);
     }
 }
 
@@ -248,9 +329,6 @@ int main() {
     // Vehicle state
     string state = "KL";
 
-    // Time in change lane state
-    double time_in_cl_state = 0.0;
-
 
     h.onMessage([&map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy,
                         &lane, &target_vel, &state](
@@ -296,7 +374,7 @@ int main() {
 
                     // Set car_s to be at end of previous path
                     int prev_size = previous_path_x.size();
-                    if (prev_size > 2) {
+                    if (prev_size > 0) {
                         car_s = end_path_s;
                     }
 
@@ -309,14 +387,14 @@ int main() {
                     // If a vehicle is ahead of us and too close, then decelerate until we match its speed.
                     if (too_close) {
                         if (target_vel * 0.447 > car_ahead_speed) {
-                            target_vel -= 0.40;
+                            target_vel -= 0.30;
                         }
                     }
 
                     // If no vehicle ahead and in KL state, then accelerate to the target speed of 49.5 mph.
-                    if (!too_close && state.compare("KL") == 0) {
+                    if (!too_close) {
                         if (target_vel < 49.5) {
-                            target_vel += 0.40;
+                            target_vel += 0.30;
                         }
                     }
 
@@ -327,102 +405,46 @@ int main() {
                     }
 
                     // If lane change complete, then return to keep-lane state
-                    if (state.compare("CL") == 0 && abs(2+4*lane - car_d) < 0.5) {
+                    if (state.compare("CL") == 0 && abs(2 + 4 * lane - car_d) < 0.5) {
                         state = "KL";
                     }
 
-                    // Begin new path using all points from previous path
+                    // Begin new path using points from previous path
                     vector<double> next_x_vals;
                     vector<double> next_y_vals;
-
-                    for (int i = 0; i < prev_size; ++i) {
-                        next_x_vals.push_back(previous_path_x[i]);
-                        next_y_vals.push_back(previous_path_y[i]);
-                    }
+                    addPreviousPathPoints(previous_path_x, previous_path_y, &next_x_vals, &next_y_vals);
 
                     // Create a list of widely spaced (x,y) waypoints, evenly spaced at 30m.
                     // Later we'll interpolate between these points
                     vector<double> ptsx;
                     vector<double> ptsy;
 
-                    // Car's reference at this frame will be its current reference
-                    double ref_x = car_x;
-                    double ref_y = car_y;
-                    double ref_yaw = car_yaw;
+                    // Get Spline Anchor Points
+                    getAnchorPoints(car_x, car_y, car_yaw, car_s, lane, previous_path_x, previous_path_y,
+                                    map_waypoints_s, map_waypoints_x, map_waypoints_y, &ptsx, &ptsy);
 
+
+                    // Transform anchor points to vehicle coordinate frame
+                    double ref_x, ref_y, ref_yaw;
                     if (prev_size < 2) {
-                        double prev_car_x = car_x - cos(car_yaw);
-                        double prev_car_y = car_y - sin(car_yaw);
-
-                        ptsx.push_back(prev_car_x);
-                        ptsx.push_back(car_x);
-
-                        ptsy.push_back(prev_car_y);
-                        ptsy.push_back(car_y);
-
+                        ref_x = car_x;
+                        ref_y = car_y;
+                        ref_yaw = car_yaw;
                     } else {
-                        ref_x = previous_path_x[prev_size - 1];
-                        ref_y = previous_path_y[prev_size - 1];
-
-                        double ref_x_prev = previous_path_x[prev_size - 2];
-                        double ref_y_prev = previous_path_y[prev_size - 2];
-                        ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
-
-                        ptsx.push_back(ref_x_prev);
-                        ptsx.push_back(ref_x);
-
-                        ptsy.push_back(ref_y_prev);
-                        ptsy.push_back(ref_y);
+                        vector<double> pose = getCarPose(previous_path_x, previous_path_y);
+                        ref_x = pose[0];
+                        ref_y = pose[1];
+                        ref_yaw = pose[2];
                     }
+                    transformAnchorPoints(&ptsx, &ptsy, ref_x, ref_y, ref_yaw);
 
-                    vector<double> next_wp0 = getXY(car_s + 30, (2 + 4 * lane), map_waypoints_s, map_waypoints_x,
-                                                    map_waypoints_y);
-                    vector<double> next_wp1 = getXY(car_s + 60, (2 + 4 * lane), map_waypoints_s, map_waypoints_x,
-                                                    map_waypoints_y);
-                    vector<double> next_wp2 = getXY(car_s + 90, (2 + 4 * lane), map_waypoints_s, map_waypoints_x,
-                                                    map_waypoints_y);
-
-                    ptsx.push_back(next_wp0[0]);
-                    ptsx.push_back(next_wp1[0]);
-                    ptsx.push_back(next_wp2[0]);
-
-                    ptsy.push_back(next_wp0[1]);
-                    ptsy.push_back(next_wp1[1]);
-                    ptsy.push_back(next_wp2[1]);
-
-                    // Transform spline anchor points to vehicle reference frame
-                    for (int i = 0; i < ptsx.size(); ++i) {
-                        double shift_x = ptsx[i] - ref_x;
-                        double shift_y = ptsy[i] - ref_y;
-                        ptsx[i] = shift_x * cos(ref_yaw) + shift_y * sin(ref_yaw);
-                        ptsy[i] = -1 * shift_x * sin(ref_yaw) + shift_y * cos(ref_yaw);
-                    }
-
-                    // Build Spline
+                    // Assemble Spline
                     tk::spline s;
                     s.set_points(ptsx, ptsy);
 
-                    // Calculate Spline points to travel at desired velocity given 0.02 sec to travel
-                    // between successive waypoints
-                    double target_x = 30.0;
-                    double target_y = s(target_x);
-                    double target_dist = sqrt(pow(target_x, 2) + pow(target_y, 2));
-                    double x_add_on = 0.0;
-                    double N = (target_dist / (0.02 * target_vel * 0.447));
-                    for (int i = 1; i <= 50 - previous_path_x.size(); i++) {
-                        double x_point = x_add_on + (target_x / N);
-                        double y_point = s(x_point);
-                        x_add_on = x_point;
-
-                        double x_ref = x_point;
-                        double y_ref = y_point;
-                        x_point = x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw) + ref_x;
-                        y_point = x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw) + ref_y;
-
-                        next_x_vals.push_back(x_point);
-                        next_y_vals.push_back(y_point);
-
-                    }
+                    // Calculate Spline points to travel at desired velocity given 0.02 sec between successive waypoints
+                    interpolateSpline(target_vel, ref_x, ref_y, ref_yaw, s, previous_path_x, &next_x_vals,
+                                      &next_y_vals);
 
                     json msgJson;
 
