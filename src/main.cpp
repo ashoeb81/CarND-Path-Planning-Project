@@ -389,10 +389,7 @@ int main() {
                         if (target_vel * 0.447 > car_ahead_speed) {
                             target_vel -= 0.30;
                         }
-                    }
-
-                    // If no vehicle ahead and in KL state, then accelerate to the target speed of 49.5 mph.
-                    if (!too_close) {
+                    } else {
                         if (target_vel < 49.5) {
                             target_vel += 0.30;
                         }
