@@ -151,16 +151,23 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
+// Analyzes the traffic ahead of our vehicle and in the same lane to see if any vehicles are close (within 20 meters)
 void checkTrafficAhead(int ego_car_lane, double ego_car_s, double time_horizon,
                        const vector<vector<double>> &sensor_fusion, bool *too_close, double *car_ahead_speed) {
+    // Loop over each vehicle observed by our sensor.
     for (int i = 0; i < sensor_fusion.size(); ++i) {
+        // Extract d-coordinate of current vehicle.
         float d = sensor_fusion[i][6];
+        // Extract s-coordinate of current vehicle.
         double check_car_s = sensor_fusion[i][5];
+        // Check if current vehicle is in the same lane as our vechile (ego-vehicle).
         if (d < (2 + ego_car_lane * 4 + 2) && d > (2 + ego_car_lane * 4 - 2)) {
+            // If current vehicle is in our lane, then predict where this vehicle will be after time_horizion.
             double vx = sensor_fusion[i][3];
             double vy = sensor_fusion[i][4];
             double check_car_speed = sqrt(pow(vx, 2) + pow(vy, 2));
             check_car_s += time_horizon * check_car_speed;
+            // If current vehicle will be within 20 meters then it is too close and return its speed.
             if (check_car_s > ego_car_s && check_car_s - ego_car_s < 20) {
                 *too_close = true;
                 *car_ahead_speed = check_car_speed;
@@ -170,25 +177,35 @@ void checkTrafficAhead(int ego_car_lane, double ego_car_s, double time_horizon,
     }
 }
 
+// Anlayze the traffic in all lanes other than our current lane to see if any are suitable for a lane change.
 void findNewLane(int ego_car_lane, double ego_car_s, double time_horizon, const vector<vector<double>> &sensor_fusion,
                  int *new_lane) {
+    // Loop over all available lanes.
     for (int l = 0; l <= 2; ++l) {
+        // Analyze only the lanes that are immediately adjacent to our current lane.
         if ((l != ego_car_lane) && abs(l - ego_car_lane) < 2) {
+            // For each lane, check to see if any vehicle will be within 20 meters of us after lane change is complete.
             bool safe_to_change_lanes = true;
+            // Loop over each vehicle observed by our sensor.
             for (int i = 0; i < sensor_fusion.size(); ++i) {
+                // Extract d-coordinate of current vehicle.
                 float d = sensor_fusion[i][6];
+                // Check if current vehicle is in the candidate lane.
                 if (d < (2 + l * 4 + 2) && d > (2 + l * 4 - 2)) {
+                    // If vehicle is in the candidate lane, then predict where this vehicle will be after time_horizon.
                     double vx = sensor_fusion[i][3];
                     double vy = sensor_fusion[i][4];
                     double speed = sqrt(pow(vx, 2) + pow(vy, 2));
                     double check_car_s = sensor_fusion[i][5];
                     check_car_s += time_horizon * speed;
+                    // If vehicle will be within 20 meters then candidate lane is not an option for a lane change.
                     if (abs(check_car_s - ego_car_s) < 20) {
                         safe_to_change_lanes = false;
                         break;
                     }
                 }
             }
+            // If candidate lane is determined to be safe, then return it.
             if (safe_to_change_lanes) {
                 *new_lane = l;
                 break;
@@ -197,6 +214,7 @@ void findNewLane(int ego_car_lane, double ego_car_s, double time_horizon, const 
     }
 }
 
+// Adds x,y points from previous path to our new path.
 void addPreviousPathPoints(const vector<double> &previous_path_x, const vector<double> &previous_path_y,
                            vector<double> *next_x_vals, vector<double> *next_y_vals) {
     for (int i = 0; i < previous_path_x.size(); ++i) {
@@ -205,6 +223,8 @@ void addPreviousPathPoints(const vector<double> &previous_path_x, const vector<d
     }
 }
 
+// Generates anchor points used to fit spline.  The anchor points are the endpoints of the previous path as well
+// as points 30, 60, and 90 meters away of the end of the previous path.
 void getAnchorPoints(double ego_car_x, double ego_car_y, double ego_car_yaw, double ego_car_s, double ego_car_lane,
                      const vector<double> &previous_path_x, const vector<double> &previous_path_y,
                      const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y,
@@ -235,6 +255,7 @@ void getAnchorPoints(double ego_car_x, double ego_car_y, double ego_car_yaw, dou
     ptsy->push_back(next_wp2[1]);
 }
 
+// Get our car's current position (x,y coordinates) and yaw angle.
 vector<double> getCarPose(const vector<double> &prev_path_x, const vector<double> &prev_path_y) {
     int prev_size = prev_path_x.size();
     double x = prev_path_x[prev_size - 1];
@@ -245,6 +266,7 @@ vector<double> getCarPose(const vector<double> &prev_path_x, const vector<double
     return {x, y, yaw};
 }
 
+// Transform anchor points from world-coordinate frame to vehicle coordinate frame.
 void transformAnchorPoints(vector<double> *ptsx, vector<double> *ptsy, double ref_x, double ref_y, double ref_yaw) {
     // Transform spline anchor points to vehicle reference frame
     for (int i = 0; i < ptsx->size(); ++i) {
@@ -255,6 +277,7 @@ void transformAnchorPoints(vector<double> *ptsx, vector<double> *ptsy, double re
     }
 }
 
+// Interpolate between spline anchor points using linear approximation method detailed in the project walkthrough.
 void interpolateSpline(double ego_car_target_vel, double ref_x, double ref_y, double ref_yaw, const tk::spline &s,
                        const vector<double> &previous_path_x, vector<double> *next_x_vals,
                        vector<double> *next_y_vals) {
@@ -318,15 +341,14 @@ int main() {
     }
 
     // Lane occupied by vehicle.
-    // Lane 0 is the most disant from highway dividing line (rightmost lane).
-    // Lane 1 is the middle lane.
-    // Lane 2 is the lane closest to the dividing line (leftmost lane).
     int lane = 1;
 
-    // Vehicle target velocity
-    double target_vel = 0; // mph
+    // Vehicle target velocity begins at 0 but is incremented (depending on traffic) to a maximum of 49.5 mph.
+    double target_vel = 0;
 
-    // Vehicle state
+    // Vehicle states include Keep-Lane (KL) and Change Lane (CL).
+    // In the KL state the vehicle maintains its current lane and attempts to drive at 49.5 mph.
+    // In the CL state the vehicle searches for a safe lane to maneuver into.
     string state = "KL";
 
 
@@ -378,13 +400,18 @@ int main() {
                         car_s = end_path_s;
                     }
 
+                    /////////////////////////////////////////////////////////////////////////////
+                    // Behavior Planner Logic
+                    /////////////////////////////////////////////////////////////////////////////
+
                     // Check for vehicles ahead of us that are too close (within 20 meters).
                     bool too_close = false;
                     double car_ahead_speed;
                     double time_horizon = 0.02 * prev_size;
                     checkTrafficAhead(lane, car_s, time_horizon, sensor_fusion, &too_close, &car_ahead_speed);
 
-                    // If a vehicle is ahead of us and too close, then decelerate until we match its speed.
+                    // If a vehicle is ahead of us is too close, then decelerate until we match its speed.
+                    // Otherwise, continue accelerating to the desired maximum speed of 49.5 mph.
                     if (too_close) {
                         if (target_vel * 0.447 > car_ahead_speed) {
                             target_vel -= 0.30;
@@ -395,28 +422,32 @@ int main() {
                         }
                     }
 
-                    // If current speed is below target speed of 49.5 mph then transition from KL state to CL state.
+                    // If current speed is below target speed of 49.5 mph and in the KL state, then transition to
+                    // the CL state in order to find and an open lane.
                     if (too_close && target_vel < 49.5 && state.compare("KL") == 0) {
                         state = "CL";
                         findNewLane(lane, car_s, time_horizon, sensor_fusion, &lane);
                     }
 
-                    // If lane change complete, then return to keep-lane state
+                    // If in the CL state and a lane change has completed, then return to keep-lane state.  We detect
+                    // that a lane change has completed by noting that the d-coordinate of the car is close to the
+                    // value 2 + 4 * lane.
                     if (state.compare("CL") == 0 && abs(2 + 4 * lane - car_d) < 0.5) {
                         state = "KL";
                     }
+
+                    /////////////////////////////////////////////////////////////////////////////
+                    // Path Generation
+                    /////////////////////////////////////////////////////////////////////////////
 
                     // Begin new path using points from previous path
                     vector<double> next_x_vals;
                     vector<double> next_y_vals;
                     addPreviousPathPoints(previous_path_x, previous_path_y, &next_x_vals, &next_y_vals);
 
-                    // Create a list of widely spaced (x,y) waypoints, evenly spaced at 30m.
-                    // Later we'll interpolate between these points
+                    // Get Spline Anchor Points
                     vector<double> ptsx;
                     vector<double> ptsy;
-
-                    // Get Spline Anchor Points
                     getAnchorPoints(car_x, car_y, car_yaw, car_s, lane, previous_path_x, previous_path_y,
                                     map_waypoints_s, map_waypoints_x, map_waypoints_y, &ptsx, &ptsy);
 
@@ -435,17 +466,17 @@ int main() {
                     }
                     transformAnchorPoints(&ptsx, &ptsy, ref_x, ref_y, ref_yaw);
 
-                    // Assemble Spline
+                    // Fit Spline
                     tk::spline s;
                     s.set_points(ptsx, ptsy);
 
-                    // Calculate Spline points to travel at desired velocity given 0.02 sec between successive waypoints
+                    // Interpolate Spline points to travel at desired velocity given 0.02 sec needed to travel between
+                    // any two points.
                     interpolateSpline(target_vel, ref_x, ref_y, ref_yaw, s, previous_path_x, &next_x_vals,
                                       &next_y_vals);
 
                     json msgJson;
 
-                    // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
 
